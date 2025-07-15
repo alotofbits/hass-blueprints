@@ -1,14 +1,17 @@
+# powerctrl_actor.yaml
+# Version: 1.0.1
+# Author: Fredrik Baecklund / OpenAI ChatGPT
+# Last modified: 2025-07-15
+# No metadata field! Only comments above.
+# See: https://www.home-assistant.io/docs/blueprint/schema/
+
 blueprint:
   name: Powerctrl Actor (Priority-based Switch Controller)
   description: >
     Powerctrl Actor: Controls a single device based on global allowed priority, device's own priority, and optional overrides.
-    Supports simulation mode and logs all actions. Version 1.0.0.
+    Supports simulation mode and logs all actions. Version 1.0.1.
   domain: automation
   source_url: https://github.com/alotofbits/powerctrl-actor-blueprint
-  metadata:
-    version: 1.0.0
-    author: "Fredrik Baecklund / OpenAI ChatGPT"
-    last_modified: 2025-07-15
 
   input:
     actor_entity:
@@ -131,4 +134,4 @@ action:
                 {{ !input actor_entity }} turned OFF.
                 actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
 
-# End of blueprint v1.0.0
+# End of blueprint v1.0.1
