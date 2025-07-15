@@ -1,132 +1,134 @@
 blueprint:
-  name: Power Optimization Controller
-  description: |
-    Version: 1.0.0
-    Calculates power mode and allocates power budget based on current usage,
-    Nordpool electricity price, and weighted peak hour rules.
-    Designed to run every minute.
+  name: Powerctrl Actor (Priority-based Switch Controller)
+  description: >
+    Powerctrl Actor: Controls a single device based on global allowed priority, device's own priority, and optional overrides.
+    Supports simulation mode and logs all actions. Version 1.0.0.
   domain: automation
+  source_url: https://github.com/alotofbits/powerctrl-actor-blueprint
+  metadata:
+    version: 1.0.0
+    author: "Fredrik Baecklund / OpenAI ChatGPT"
+    last_modified: 2025-07-15
+
   input:
-    hourly_usage_sensor:
-      name: Hourly accumulated usage
+    actor_entity:
+      name: Actor Entity
+      description: "Switch, climate, script, or other entity to be controlled"
       selector:
-        entity:
-          domain: sensor
-    quarter_usage_sensor:
-      name: Quarter-hour accumulated usage
-      selector:
-        entity:
-          domain: sensor
-    weighted_peak_sensors:
-      name: Top 3 weighted hourly usage sensors
-      selector:
-        entity:
-          multiple: true
-          domain: sensor
-    nordpool_price_sensor:
-      name: Nordpool price sensor
-      selector:
-        entity:
-          domain: sensor
-    power_mode_select:
-      name: Power mode select helper
-      selector:
-        entity:
-          domain: input_select
-    min_power_kw:
-      name: Minimum target power (kW)
+        entity: {}
+
+    actor_priority:
+      name: Actor Priority
+      description: "Input_number with priority for this actor (integer, 1 = highest)"
       selector:
         entity:
           domain: input_number
-    available_power_number:
-      name: Calculated available power (kW)
+
+    global_priority:
+      name: Global Allowed Priority
+      description: "input_number or input_select set by controller (global allowed max priority)"
       selector:
         entity:
-          domain: input_number
-    simulation_flag:
-      name: Global simulation mode
+          domain: [input_number, input_select]
+
+    override_force_on:
+      name: Force On Helper
+      description: "input_boolean to force ON regardless of priority"
+      default: ""
       selector:
         entity:
           domain: input_boolean
-    notify_target:
-      name: Notification service (optional)
+
+    override_force_off:
+      name: Force Off Helper
+      description: "input_boolean to force OFF regardless of priority"
       default: ""
       selector:
-        service: {}
+        entity:
+          domain: input_boolean
+
+    simulation_mode:
+      name: Simulation Mode
+      description: "input_boolean for simulation/testing (log only, no actions)"
+      default: input_boolean.powerctrl_simulation_global
+      selector:
+        entity:
+          domain: input_boolean
 
 mode: single
+
 trigger:
-  - platform: time_pattern
-    minutes: "/1"
+  - platform: state
+    entity_id:
+      - !input actor_priority
+      - !input global_priority
+      - !input override_force_on
+      - !input override_force_off
+      - !input simulation_mode
 
 variables:
-  weighted_usage: >
-    {% set hour = now().hour %}
-    {% set raw = states(input.hourly_usage_sensor) | float(0) %}
-    {% if hour < 6 or hour >= 22 %}
-      {{ (raw * 0.5) | round(3) }}
-    {% else %}
-      {{ raw | round(3) }}
-    {% endif %}
-  top3_avg: >
-    {% set sensors = input.weighted_peak_sensors %}
-    {% set values = sensors | map('states') | map('float') | list %}
-    {% if values | length >= 3 %}
-      {{ (values | sum / 3) | round(3) }}
-    {% else %}
-      999.0
-    {% endif %}
-  min_kw: "{{ states(input.min_power_kw) | float(5) }}"
-  delta_kw: "{{ (top3_avg - weighted_usage) | float(0) }}"
-  available_kw: >
-    {% if delta_kw > min_kw %}
-      {{ delta_kw | round(2) }}
-    {% else %}
-      {{ min_kw }}
-    {% endif %}
-  mode: >
-    {% if delta_kw < 0.5 %}
-      critical
-    {% elif delta_kw < 2 %}
-      save
-    {% else %}
-      normal
-    {% endif %}
-
-condition:
-  - condition: template
-    value_template: >
-      {{ states(input.hourly_usage_sensor) not in ['unavailable', 'unknown'] }}
+  actor_prio: "{{ states(!input actor_priority) | int(99) }}"
+  global_prio: "{{ states(!input global_priority) | int(99) }}"
+  force_on: "{{ !input override_force_on != '' and is_state(!input override_force_on, 'on') }}"
+  force_off: "{{ !input override_force_off != '' and is_state(!input override_force_off, 'on') }}"
+  sim_mode: "{{ is_state(!input simulation_mode, 'on') }}"
+  actor_state: "{{ states(!input actor_entity) }}"
 
 action:
-  - service: input_number.set_value
-    data:
-      value: "{{ available_kw }}"
-    target:
-      entity_id: !input available_power_number
-
-  - service: input_select.select_option
-    data:
-      option: "{{ mode }}"
-    target:
-      entity_id: !input power_mode_select
-
   - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ input.notify_target != '' }}"
+      - conditions: "{{ force_on }}"
         sequence:
-          - service: "{{ input.notify_target }}"
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
+                sequence:
+                  - service: homeassistant.turn_on
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
             data:
-              message: >
-                PowerController: Mode set to {{ mode }}, available power {{ available_kw }} kW
-              title: Power Optimization Controller
+              title: "[Powerctrl Actor] Forced ON"
+              message: |
+                Force ON activated for {{ !input actor_entity }}. Turned ON (sim_mode: {{ sim_mode }}).
+      - conditions: "{{ force_off }}"
+        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
+                sequence:
+                  - service: homeassistant.turn_off
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
+            data:
+              title: "[Powerctrl Actor] Forced OFF"
+              message: |
+                Force OFF activated for {{ !input actor_entity }}. Turned OFF (sim_mode: {{ sim_mode }}).
+      - conditions: "{{ actor_prio <= global_prio }}"
+        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
+                sequence:
+                  - service: homeassistant.turn_on
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
+            data:
+              title: "[Powerctrl Actor] Enabled"
+              message: |
+                {{ !input actor_entity }} turned ON.
+                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
+      - conditions: []
+        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
+                sequence:
+                  - service: homeassistant.turn_off
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
+            data:
+              title: "[Powerctrl Actor] Disabled"
+              message: |
+                {{ !input actor_entity }} turned OFF.
+                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
 
-  - condition: state
-    entity_id: !input simulation_flag
-    state: "on"
-  - service: persistent_notification.create
-    data:
-      message: >
-        Controller run simulated: mode={{ mode }}, power={{ available_kw }}kW
-      title: PowerCtrl Simulated
+# End of blueprint v1.0.0
