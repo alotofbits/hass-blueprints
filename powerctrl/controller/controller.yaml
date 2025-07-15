@@ -1,137 +1,195 @@
-# powerctrl_actor.yaml
-# Version: 1.0.1
+# powerctrl_controller.yaml
+# Version: 1.0.2
 # Author: Fredrik Baecklund / OpenAI ChatGPT
 # Last modified: 2025-07-15
-# No metadata field! Only comments above.
-# See: https://www.home-assistant.io/docs/blueprint/schema/
+# This blueprint evaluates energy price, effect, solar, minimum allowed top, etc, and sets the global allowed
+# priority for all actors (devices). It never controls entities directly, only sets the target value for global prio.
+# Sources:
+# - https://www.home-assistant.io/docs/blueprint/schema/
+# - https://community.home-assistant.io/t/prioritised-load-shedding-based-on-power-availability/412954/4
+# - https://community.home-assistant.io/t/blueprint-for-controlling-multiple-switches-with-individual-helpers/332477
 
 blueprint:
-  name: Powerctrl Actor (Priority-based Switch Controller)
-  description: >
-    Powerctrl Actor: Controls a single device based on global allowed priority, device's own priority, and optional overrides.
-    Supports simulation mode and logs all actions. Version 1.0.1.
+  name: Powerctrl Controller (Global Priority Evaluator)
+  description: |
+    Powerctrl Controller: Evaluates logic for price, solar, effect, min target, overrides etc
+    and sets the allowed global priority level for all connected actors.
+    No direct device action is performed in this automation.
+    Version 1.0.2.
   domain: automation
-  source_url: https://github.com/alotofbits/powerctrl-actor-blueprint
+  source_url: https://github.com/alotofbits/powerctrl-controller-blueprint
 
   input:
-    actor_entity:
-      name: Actor Entity
-      description: "Switch, climate, script, or other entity to be controlled"
-      selector:
-        entity: {}
-
-    actor_priority:
-      name: Actor Priority
-      description: "Input_number with priority for this actor (integer, 1 = highest)"
-      selector:
-        entity:
-          domain: input_number
-
     global_priority:
-      name: Global Allowed Priority
-      description: "input_number or input_select set by controller (global allowed max priority)"
+      name: Global Priority Helper
+      description: 'input_number or input_select that holds the global allowed active priority.'
       selector:
         entity:
           domain: [input_number, input_select]
-
-    override_force_on:
-      name: Force On Helper
-      description: "input_boolean to force ON regardless of priority"
-      default: ""
-      selector:
-        entity:
-          domain: input_boolean
-
-    override_force_off:
-      name: Force Off Helper
-      description: "input_boolean to force OFF regardless of priority"
-      default: ""
-      selector:
-        entity:
-          domain: input_boolean
-
     simulation_mode:
       name: Simulation Mode
-      description: "input_boolean for simulation/testing (log only, no actions)"
+      description: 'input_boolean. If on, all actions are simulated/logged only.'
       default: input_boolean.powerctrl_simulation_global
       selector:
         entity:
           domain: input_boolean
+    available_power:
+      name: Available Power (kW)
+      description: 'input_number helper for available (free) power, in kW.'
+      selector:
+        entity:
+          domain: input_number
+    min_target_kw:
+      name: Minimum Allowed Top Average (kW)
+      description: 'input_number for minimum allowed effect average.'
+      selector:
+        entity:
+          domain: input_number
+    power_mode:
+      name: Power Control Mode
+      description: 'input_select for current power control strategy.'
+      selector:
+        entity:
+          domain: input_select
+    sensor_hourly:
+      name: Hourly Weighted Consumption
+      description: 'Weighted hourly energy consumption sensor (e.g. powerctrl_hourly_consumption_weighted)'
+      selector:
+        entity:
+          domain: sensor
+    sensor_quarterly:
+      name: Quarterly Weighted Consumption
+      description: 'Weighted quarterly energy consumption sensor (e.g. powerctrl_quarterly_consumption_weighted)'
+      selector:
+        entity:
+          domain: sensor
+    sensor_nordpool:
+      name: Nordpool Price Sensor
+      description: 'Entity providing current hourly spot price.'
+      selector:
+        entity:
+          domain: sensor
+    sensor_solar:
+      name: Solar Production Sensor
+      description: 'Entity with current solar production in kW.'
+      selector:
+        entity:
+          domain: sensor
+    sensor_top1:
+      name: Top Hour Value #1
+      description: 'Sensor with the first (highest) effect peak (kW) for this month.'
+      selector:
+        entity:
+          domain: sensor
+    sensor_top2:
+      name: Top Hour Value #2
+      description: 'Sensor with the second highest effect peak (kW) for this month.'
+      selector:
+        entity:
+          domain: sensor
+    sensor_top3:
+      name: Top Hour Value #3
+      description: 'Sensor with the third highest effect peak (kW) for this month.'
+      selector:
+        entity:
+          domain: sensor
+    sensor_current_avg:
+      name: Current Monthly Avg
+      description: 'Sensor with the current running average used for effect fee.'
+      selector:
+        entity:
+          domain: sensor
 
 mode: single
 
 trigger:
+  - platform: time_pattern
+    minutes: "*"
   - platform: state
     entity_id:
-      - !input actor_priority
       - !input global_priority
-      - !input override_force_on
-      - !input override_force_off
       - !input simulation_mode
+      - !input available_power
+      - !input min_target_kw
+      - !input power_mode
+      - !input sensor_hourly
+      - !input sensor_quarterly
+      - !input sensor_nordpool
+      - !input sensor_solar
+      - !input sensor_top1
+      - !input sensor_top2
+      - !input sensor_top3
+      - !input sensor_current_avg
 
 variables:
-  actor_prio: "{{ states(!input actor_priority) | int(99) }}"
-  global_prio: "{{ states(!input global_priority) | int(99) }}"
-  force_on: "{{ !input override_force_on != '' and is_state(!input override_force_on, 'on') }}"
-  force_off: "{{ !input override_force_off != '' and is_state(!input override_force_off, 'on') }}"
-  sim_mode: "{{ is_state(!input simulation_mode, 'on') }}"
-  actor_state: "{{ states(!input actor_entity) }}"
+  hourly: "{{ states(!input sensor_hourly) | float(0) }}"
+  quarterly: "{{ states(!input sensor_quarterly) | float(0) }}"
+  price: "{{ states(!input sensor_nordpool) | float(0) }}"
+  solar: "{{ states(!input sensor_solar) | float(0) }}"
+  top1: "{{ states(!input sensor_top1) | float(0) }}"
+  top2: "{{ states(!input sensor_top2) | float(0) }}"
+  top3: "{{ states(!input sensor_top3) | float(0) }}"
+  current_avg: "{{ states(!input sensor_current_avg) | float(0) }}"
+  min_target: "{{ states(!input min_target_kw) | float(0) }}"
+  available: "{{ states(!input available_power) | float(0) }}"
+  simulation: "{{ is_state(!input simulation_mode, 'on') }}"
+  power_mode: "{{ states(!input power_mode) }}"
+
+  # Placeholder for logic results (REPLACE with your actual logic/rules!)
+  recommended_priority: >
+    {#
+      -- CORE LOGIC EXAMPLES (replace with actual optimization rules) --
+      If power_mode == 'Effektspar', lower priority (raise load shedding).
+      If price < 0 and solar > 0.2, allow higher priority.
+      If current_avg >= min_target, increase load shedding.
+      ...
+    #}
+    {% set prio = 10 %}
+    {% if power_mode == 'Effektspar' %}
+      {% set prio = 15 %}
+    {% elif price < 0 and solar > 0.2 %}
+      {% set prio = 3 %}
+    {% elif current_avg >= min_target %}
+      {% set prio = 12 %}
+    {% endif %}
+    {{ prio }}
 
 action:
   - choose:
-      - conditions: "{{ force_on }}"
+      - conditions: "{{ simulation }}"
         sequence:
-          - choose:
-              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
-                sequence:
-                  - service: homeassistant.turn_on
-                    target:
-                      entity_id: !input actor_entity
           - service: persistent_notification.create
             data:
-              title: "[Powerctrl Actor] Forced ON"
+              title: "[Simulation] Powerctrl Controller Logic Evaluation"
               message: |
-                Force ON activated for {{ !input actor_entity }}. Turned ON (sim_mode: {{ sim_mode }}).
-      - conditions: "{{ force_off }}"
-        sequence:
-          - choose:
-              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
-                sequence:
-                  - service: homeassistant.turn_off
-                    target:
-                      entity_id: !input actor_entity
-          - service: persistent_notification.create
-            data:
-              title: "[Powerctrl Actor] Forced OFF"
-              message: |
-                Force OFF activated for {{ !input actor_entity }}. Turned OFF (sim_mode: {{ sim_mode }}).
-      - conditions: "{{ actor_prio <= global_prio }}"
-        sequence:
-          - choose:
-              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
-                sequence:
-                  - service: homeassistant.turn_on
-                    target:
-                      entity_id: !input actor_entity
-          - service: persistent_notification.create
-            data:
-              title: "[Powerctrl Actor] Enabled"
-              message: |
-                {{ !input actor_entity }} turned ON.
-                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
+                Simulated (no action): Would set global priority to {{ recommended_priority }} based on:
+                - Hourly: {{ hourly }} kWh
+                - Quarterly: {{ quarterly }} kWh
+                - Price: {{ price }}
+                - Solar: {{ solar }} kW
+                - Current avg: {{ current_avg }} kW
+                - Min target: {{ min_target }} kW
+                - Top3: {{ top1 }}, {{ top2 }}, {{ top3 }} kW
+                - Power mode: {{ power_mode }}
       - conditions: []
         sequence:
-          - choose:
-              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
-                sequence:
-                  - service: homeassistant.turn_off
-                    target:
-                      entity_id: !input actor_entity
+          - service: input_number.set_value
+            target:
+              entity_id: !input global_priority
+            data:
+              value: "{{ recommended_priority }}"
           - service: persistent_notification.create
             data:
-              title: "[Powerctrl Actor] Disabled"
+              title: "[Powerctrl] Controller Logic Evaluation"
               message: |
-                {{ !input actor_entity }} turned OFF.
-                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
+                Set global priority to {{ recommended_priority }} based on:
+                - Hourly: {{ hourly }} kWh
+                - Quarterly: {{ quarterly }} kWh
+                - Price: {{ price }}
+                - Solar: {{ solar }} kW
+                - Current avg: {{ current_avg }} kW
+                - Min target: {{ min_target }} kW
+                - Top3: {{ top1 }}, {{ top2 }}, {{ top3 }} kW
+                - Power mode: {{ power_mode }}
 
-# End of blueprint v1.0.1
+# End of blueprint v1.0.2

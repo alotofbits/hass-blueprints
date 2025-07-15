@@ -1,113 +1,137 @@
+# powerctrl_actor.yaml
+# Version: 1.0.1
+# Author: Fredrik Baecklund / OpenAI ChatGPT
+# Last modified: 2025-07-15
+# No metadata field! Only comments above.
+# See: https://www.home-assistant.io/docs/blueprint/schema/
+
 blueprint:
-  name: PowerCtrl Switch Actuator
-  description: |
-    Version: 1.1.0
-    Controls a switch based on available power and priority.
-    Turns OFF if power is insufficient or mode is critical.
-    Simulation-safe. Notifies when actions are taken.
+  name: Powerctrl Actor (Priority-based Switch Controller)
+  description: >
+    Powerctrl Actor: Controls a single device based on global allowed priority, device's own priority, and optional overrides.
+    Supports simulation mode and logs all actions. Version 1.0.1.
   domain: automation
+  source_url: https://github.com/alotofbits/powerctrl-actor-blueprint
+
   input:
-    target_switch:
-      name: Target switch to control
+    actor_entity:
+      name: Actor Entity
+      description: "Switch, climate, script, or other entity to be controlled"
       selector:
-        entity:
-          domain: switch
-    device_priority:
-      name: Priority level (1-20, lower = more important)
-      selector:
-        entity:
-          domain: input_number
-    available_power:
-      name: Available power (kW)
+        entity: {}
+
+    actor_priority:
+      name: Actor Priority
+      description: "Input_number with priority for this actor (integer, 1 = highest)"
       selector:
         entity:
           domain: input_number
-    simulation_flag_global:
-      name: Global simulation flag
+
+    global_priority:
+      name: Global Allowed Priority
+      description: "input_number or input_select set by controller (global allowed max priority)"
       selector:
         entity:
-          domain: input_boolean
-    simulation_flag_local:
-      name: Local simulation flag
-      selector:
-        entity:
-          domain: input_boolean
-    power_mode:
-      name: Power mode
-      selector:
-        entity:
-          domain: input_select
-    min_power_required:
-      name: Minimum required power to turn on (kW)
-      default: 0.5
-      selector:
-        number:
-          min: 0
-          max: 10
-          step: 0.1
-          unit_of_measurement: kW
-          mode: slider
-    notification_target:
-      name: Notification service (optional)
+          domain: [input_number, input_select]
+
+    override_force_on:
+      name: Force On Helper
+      description: "input_boolean to force ON regardless of priority"
       default: ""
       selector:
-        service: {}
+        entity:
+          domain: input_boolean
+
+    override_force_off:
+      name: Force Off Helper
+      description: "input_boolean to force OFF regardless of priority"
+      default: ""
+      selector:
+        entity:
+          domain: input_boolean
+
+    simulation_mode:
+      name: Simulation Mode
+      description: "input_boolean for simulation/testing (log only, no actions)"
+      default: input_boolean.powerctrl_simulation_global
+      selector:
+        entity:
+          domain: input_boolean
 
 mode: single
+
 trigger:
-  - platform: time_pattern
-    minutes: "/1"
+  - platform: state
+    entity_id:
+      - !input actor_priority
+      - !input global_priority
+      - !input override_force_on
+      - !input override_force_off
+      - !input simulation_mode
 
 variables:
-  prio: "{{ states(input.device_priority) | int(10) }}"
-  available_kw: "{{ states(input.available_power) | float(0) }}"
-  min_kw: "{{ input.min_power_required | float(0.5) }}"
-  mode: "{{ states(input.power_mode) }}"
-  sim_global: "{{ is_state(input.simulation_flag_global, 'on') }}"
-  sim_local: "{{ is_state(input.simulation_flag_local, 'on') }}"
-  is_on: "{{ is_state(input.target_switch, 'on') }}"
-  allowed_to_run: >
-    {{
-      available_kw >= min_kw and not (mode == 'critical' and prio > 5)
-    }}
+  actor_prio: "{{ states(!input actor_priority) | int(99) }}"
+  global_prio: "{{ states(!input global_priority) | int(99) }}"
+  force_on: "{{ !input override_force_on != '' and is_state(!input override_force_on, 'on') }}"
+  force_off: "{{ !input override_force_off != '' and is_state(!input override_force_off, 'on') }}"
+  sim_mode: "{{ is_state(!input simulation_mode, 'on') }}"
+  actor_state: "{{ states(!input actor_entity) }}"
 
 action:
   - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ allowed_to_run and not is_on and not (sim_global or sim_local) }}"
+      - conditions: "{{ force_on }}"
         sequence:
-          - service: switch.turn_on
-            target:
-              entity_id: !input target_switch
-
-      - conditions:
-          - condition: template
-            value_template: "{{ not allowed_to_run and is_on and not (sim_global or sim_local) }}"
-        sequence:
-          - service: switch.turn_off
-            target:
-              entity_id: !input target_switch
-
-      - conditions:
-          - condition: template
-            value_template: "{{ sim_global or sim_local }}"
-        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
+                sequence:
+                  - service: homeassistant.turn_on
+                    target:
+                      entity_id: !input actor_entity
           - service: persistent_notification.create
             data:
-              message: >
-                Simulation: Would set {{ input.target_switch }} to
-                {{ 'ON' if allowed_to_run else 'OFF' }} (prio={{ prio }}, available={{ available_kw }} kW, mode={{ mode }})
-              title: PowerCtrl Simulation
-
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ input.notification_target != '' }}"
+              title: "[Powerctrl Actor] Forced ON"
+              message: |
+                Force ON activated for {{ !input actor_entity }}. Turned ON (sim_mode: {{ sim_mode }}).
+      - conditions: "{{ force_off }}"
         sequence:
-          - service: !input notification_target
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
+                sequence:
+                  - service: homeassistant.turn_off
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
             data:
-              message: >
-                PowerCtrl Action: {{ input.target_switch }} → {{ 'ON' if allowed_to_run else 'OFF' }}
-                Mode: {{ mode }}, Prio: {{ prio }}, Available: {{ available_kw }} kW
-              title: PowerCtrl Actuator
+              title: "[Powerctrl Actor] Forced OFF"
+              message: |
+                Force OFF activated for {{ !input actor_entity }}. Turned OFF (sim_mode: {{ sim_mode }}).
+      - conditions: "{{ actor_prio <= global_prio }}"
+        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'on' }}"
+                sequence:
+                  - service: homeassistant.turn_on
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
+            data:
+              title: "[Powerctrl Actor] Enabled"
+              message: |
+                {{ !input actor_entity }} turned ON.
+                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
+      - conditions: []
+        sequence:
+          - choose:
+              - conditions: "{{ not sim_mode and actor_state != 'off' }}"
+                sequence:
+                  - service: homeassistant.turn_off
+                    target:
+                      entity_id: !input actor_entity
+          - service: persistent_notification.create
+            data:
+              title: "[Powerctrl Actor] Disabled"
+              message: |
+                {{ !input actor_entity }} turned OFF.
+                actor_prio: {{ actor_prio }}, global_prio: {{ global_prio }}, sim_mode: {{ sim_mode }}
+
+# End of blueprint v1.0.1
