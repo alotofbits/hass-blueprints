@@ -1,6 +1,7 @@
 blueprint:
   name: Power Optimization Controller
   description: |
+    Version: 1.0.0
     Calculates power mode and allocates power budget based on current usage,
     Nordpool electricity price, and weighted peak hour rules.
     Designed to run every minute.
@@ -63,9 +64,9 @@ variables:
     {% set hour = now().hour %}
     {% set raw = states(input.hourly_usage_sensor) | float(0) %}
     {% if hour < 6 or hour >= 22 %}
-      {{ raw * 0.5 }}
+      {{ (raw * 0.5) | round(3) }}
     {% else %}
-      {{ raw }}
+      {{ raw | round(3) }}
     {% endif %}
   top3_avg: >
     {% set sensors = input.weighted_peak_sensors %}
@@ -75,8 +76,8 @@ variables:
     {% else %}
       999.0
     {% endif %}
-  min_kw: {{ states(input.min_power_kw) | float(5) }}
-  delta_kw: {{ (top3_avg - weighted_usage) | float(0) }}
+  min_kw: "{{ states(input.min_power_kw) | float(5) }}"
+  delta_kw: "{{ (top3_avg - weighted_usage) | float(0) }}"
   available_kw: >
     {% if delta_kw > min_kw %}
       {{ delta_kw | round(2) }}

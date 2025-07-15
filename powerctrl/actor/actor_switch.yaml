@@ -1,8 +1,10 @@
 blueprint:
   name: PowerCtrl Switch Actuator
   description: |
-    Controls a switch based on available power budget and priority level.
-    Supports simulation mode (local and global).
+    Version: 1.1.0
+    Controls a switch based on available power and priority.
+    Turns OFF if power is insufficient or mode is critical.
+    Simulation-safe. Notifies when actions are taken.
   domain: automation
   input:
     target_switch:
@@ -37,6 +39,7 @@ blueprint:
           domain: input_select
     min_power_required:
       name: Minimum required power to turn on (kW)
+      default: 0.5
       selector:
         number:
           min: 0
@@ -44,7 +47,6 @@ blueprint:
           step: 0.1
           unit_of_measurement: kW
           mode: slider
-      default: 0.5
     notification_target:
       name: Notification service (optional)
       default: ""
@@ -57,24 +59,33 @@ trigger:
     minutes: "/1"
 
 variables:
-  prio: {{ states(input.device_priority) | int(10) }}
-  available_kw: {{ states(input.available_power) | float(0) }}
-  min_kw: {{ input.min_power_required | float(0.5) }}
-  mode: {{ states(input.power_mode) }}
-  sim_global: {{ is_state(input.simulation_flag_global, 'on') }}
-  sim_local: {{ is_state(input.simulation_flag_local, 'on') }}
-
-condition:
-  - condition: template
-    value_template: "{{ available_kw >= min_kw }}"
+  prio: "{{ states(input.device_priority) | int(10) }}"
+  available_kw: "{{ states(input.available_power) | float(0) }}"
+  min_kw: "{{ input.min_power_required | float(0.5) }}"
+  mode: "{{ states(input.power_mode) }}"
+  sim_global: "{{ is_state(input.simulation_flag_global, 'on') }}"
+  sim_local: "{{ is_state(input.simulation_flag_local, 'on') }}"
+  is_on: "{{ is_state(input.target_switch, 'on') }}"
+  allowed_to_run: >
+    {{
+      available_kw >= min_kw and not (mode == 'critical' and prio > 5)
+    }}
 
 action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ not sim_global and not sim_local }}"
+            value_template: "{{ allowed_to_run and not is_on and not (sim_global or sim_local) }}"
         sequence:
           - service: switch.turn_on
+            target:
+              entity_id: !input target_switch
+
+      - conditions:
+          - condition: template
+            value_template: "{{ not allowed_to_run and is_on and not (sim_global or sim_local) }}"
+        sequence:
+          - service: switch.turn_off
             target:
               entity_id: !input target_switch
 
@@ -85,7 +96,8 @@ action:
           - service: persistent_notification.create
             data:
               message: >
-                Simulation: Would turn ON {{ input.target_switch }} (prio={{ prio }}, available={{ available_kw }} kW)
+                Simulation: Would set {{ input.target_switch }} to
+                {{ 'ON' if allowed_to_run else 'OFF' }} (prio={{ prio }}, available={{ available_kw }} kW, mode={{ mode }})
               title: PowerCtrl Simulation
 
   - choose:
@@ -96,6 +108,6 @@ action:
           - service: !input notification_target
             data:
               message: >
-                PowerCtrl Decision: {{ input.target_switch }} ON
-                Mode: {{ mode }}, Prio: {{ prio }}, Avail: {{ available_kw }} kW
-              title: PowerCtrl Action
+                PowerCtrl Action: {{ input.target_switch }} → {{ 'ON' if allowed_to_run else 'OFF' }}
+                Mode: {{ mode }}, Prio: {{ prio }}, Available: {{ available_kw }} kW
+              title: PowerCtrl Actuator

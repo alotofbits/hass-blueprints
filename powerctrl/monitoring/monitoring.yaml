@@ -1,6 +1,7 @@
 blueprint:
   name: PowerCtrl Sensor Monitor
   description: |
+    Version: 1.0.0
     Monitors if critical sensors are updating as expected.
     Alerts if any selected sensor hasn't updated in N minutes.
   domain: automation
