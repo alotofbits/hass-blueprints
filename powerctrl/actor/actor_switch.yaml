@@ -1,0 +1,101 @@
+blueprint:
+  name: PowerCtrl Switch Actuator
+  description: |
+    Controls a switch based on available power budget and priority level.
+    Supports simulation mode (local and global).
+  domain: automation
+  input:
+    target_switch:
+      name: Target switch to control
+      selector:
+        entity:
+          domain: switch
+    device_priority:
+      name: Priority level (1-20, lower = more important)
+      selector:
+        entity:
+          domain: input_number
+    available_power:
+      name: Available power (kW)
+      selector:
+        entity:
+          domain: input_number
+    simulation_flag_global:
+      name: Global simulation flag
+      selector:
+        entity:
+          domain: input_boolean
+    simulation_flag_local:
+      name: Local simulation flag
+      selector:
+        entity:
+          domain: input_boolean
+    power_mode:
+      name: Power mode
+      selector:
+        entity:
+          domain: input_select
+    min_power_required:
+      name: Minimum required power to turn on (kW)
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.1
+          unit_of_measurement: kW
+          mode: slider
+      default: 0.5
+    notification_target:
+      name: Notification service (optional)
+      default: ""
+      selector:
+        service: {}
+
+mode: single
+trigger:
+  - platform: time_pattern
+    minutes: "/1"
+
+variables:
+  prio: {{ states(input.device_priority) | int(10) }}
+  available_kw: {{ states(input.available_power) | float(0) }}
+  min_kw: {{ input.min_power_required | float(0.5) }}
+  mode: {{ states(input.power_mode) }}
+  sim_global: {{ is_state(input.simulation_flag_global, 'on') }}
+  sim_local: {{ is_state(input.simulation_flag_local, 'on') }}
+
+condition:
+  - condition: template
+    value_template: "{{ available_kw >= min_kw }}"
+
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ not sim_global and not sim_local }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input target_switch
+
+      - conditions:
+          - condition: template
+            value_template: "{{ sim_global or sim_local }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              message: >
+                Simulation: Would turn ON {{ input.target_switch }} (prio={{ prio }}, available={{ available_kw }} kW)
+              title: PowerCtrl Simulation
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ input.notification_target != '' }}"
+        sequence:
+          - service: !input notification_target
+            data:
+              message: >
+                PowerCtrl Decision: {{ input.target_switch }} ON
+                Mode: {{ mode }}, Prio: {{ prio }}, Avail: {{ available_kw }} kW
+              title: PowerCtrl Action

@@ -1,0 +1,55 @@
+blueprint:
+  name: PowerCtrl Sensor Monitor
+  description: |
+    Monitors if critical sensors are updating as expected.
+    Alerts if any selected sensor hasn't updated in N minutes.
+  domain: automation
+  input:
+    monitored_sensors:
+      name: Sensors to monitor
+      selector:
+        entity:
+          multiple: true
+          domain: sensor
+    max_age_minutes:
+      name: Max allowed age (minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+    notification_target:
+      name: Notify service
+      selector:
+        service: {}
+
+mode: single
+trigger:
+  - platform: time_pattern
+    minutes: "/2"
+
+variables:
+  stale_entities: >
+    {% set limit = now() - timedelta(minutes=(input.max_age_minutes | int)) %}
+    {% set stale = namespace(list=[]) %}
+    {% for entity_id in input.monitored_sensors %}
+      {% set last_changed = states[entity_id].last_changed %}
+      {% if last_changed < limit %}
+        {% set _ = stale.list.append(entity_id) %}
+      {% endif %}
+    {% endfor %}
+    {{ stale.list }}
+
+condition:
+  - condition: template
+    value_template: "{{ stale_entities | count > 0 }}"
+
+action:
+  - service: !input notification_target
+    data:
+      message: >
+        PowerCtrl Sensor Monitor:
+        The following sensors may be stale (no update in {{ input.max_age_minutes }} min):
+        {{ stale_entities | join(', ') }}
+      title: PowerCtrl Sensor Alert

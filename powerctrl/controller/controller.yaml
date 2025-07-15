@@ -1,0 +1,131 @@
+blueprint:
+  name: Power Optimization Controller
+  description: |
+    Calculates power mode and allocates power budget based on current usage,
+    Nordpool electricity price, and weighted peak hour rules.
+    Designed to run every minute.
+  domain: automation
+  input:
+    hourly_usage_sensor:
+      name: Hourly accumulated usage
+      selector:
+        entity:
+          domain: sensor
+    quarter_usage_sensor:
+      name: Quarter-hour accumulated usage
+      selector:
+        entity:
+          domain: sensor
+    weighted_peak_sensors:
+      name: Top 3 weighted hourly usage sensors
+      selector:
+        entity:
+          multiple: true
+          domain: sensor
+    nordpool_price_sensor:
+      name: Nordpool price sensor
+      selector:
+        entity:
+          domain: sensor
+    power_mode_select:
+      name: Power mode select helper
+      selector:
+        entity:
+          domain: input_select
+    min_power_kw:
+      name: Minimum target power (kW)
+      selector:
+        entity:
+          domain: input_number
+    available_power_number:
+      name: Calculated available power (kW)
+      selector:
+        entity:
+          domain: input_number
+    simulation_flag:
+      name: Global simulation mode
+      selector:
+        entity:
+          domain: input_boolean
+    notify_target:
+      name: Notification service (optional)
+      default: ""
+      selector:
+        service: {}
+
+mode: single
+trigger:
+  - platform: time_pattern
+    minutes: "/1"
+
+variables:
+  weighted_usage: >
+    {% set hour = now().hour %}
+    {% set raw = states(input.hourly_usage_sensor) | float(0) %}
+    {% if hour < 6 or hour >= 22 %}
+      {{ raw * 0.5 }}
+    {% else %}
+      {{ raw }}
+    {% endif %}
+  top3_avg: >
+    {% set sensors = input.weighted_peak_sensors %}
+    {% set values = sensors | map('states') | map('float') | list %}
+    {% if values | length >= 3 %}
+      {{ (values | sum / 3) | round(3) }}
+    {% else %}
+      999.0
+    {% endif %}
+  min_kw: {{ states(input.min_power_kw) | float(5) }}
+  delta_kw: {{ (top3_avg - weighted_usage) | float(0) }}
+  available_kw: >
+    {% if delta_kw > min_kw %}
+      {{ delta_kw | round(2) }}
+    {% else %}
+      {{ min_kw }}
+    {% endif %}
+  mode: >
+    {% if delta_kw < 0.5 %}
+      critical
+    {% elif delta_kw < 2 %}
+      save
+    {% else %}
+      normal
+    {% endif %}
+
+condition:
+  - condition: template
+    value_template: >
+      {{ states(input.hourly_usage_sensor) not in ['unavailable', 'unknown'] }}
+
+action:
+  - service: input_number.set_value
+    data:
+      value: "{{ available_kw }}"
+    target:
+      entity_id: !input available_power_number
+
+  - service: input_select.select_option
+    data:
+      option: "{{ mode }}"
+    target:
+      entity_id: !input power_mode_select
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ input.notify_target != '' }}"
+        sequence:
+          - service: "{{ input.notify_target }}"
+            data:
+              message: >
+                PowerController: Mode set to {{ mode }}, available power {{ available_kw }} kW
+              title: Power Optimization Controller
+
+  - condition: state
+    entity_id: !input simulation_flag
+    state: "on"
+  - service: persistent_notification.create
+    data:
+      message: >
+        Controller run simulated: mode={{ mode }}, power={{ available_kw }}kW
+      title: PowerCtrl Simulated
